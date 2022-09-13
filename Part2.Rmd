@@ -1,0 +1,110 @@
+---
+title: "STAT 621 Project 2"
+author: "Ziren Wang(zw71)"
+date: "4/25/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
+```
+
+**DATA:** **2011OzoneTempRHC411.csv** is a csv file of hourly observed ambient ozone levels at a central Houston locatin (monitor C411), along with temperature and relative humidity for the year 2011. 
+
+Focus your efforts on **ozone and temperature**. 
+
+- **QUESTION 1** Produce the following plots
+    + A time series plot of both series. 
+    + ACF and PACF of both series. 
+    + A cross-correlation plot.
+    + A cross-correlation plot of **pre-whitened** series (to prewhiten you can simply fit an AR model and obtain the residuals).
+```{r}
+raw_data <- read.csv("2011OzoneTempRHC411.csv")
+
+data = data.frame(
+  time = strptime("2011-01-01 00:00:00", "%Y-%m-%d %H:%M:%S") + 3600*(0:(length(raw_data$Date)-1)), # hourly data,
+  Ozone = forecast::na.interp(as.numeric(raw_data$Ozone)), # interpolate missing value, same with following columns
+  Temp = forecast::na.interp(as.numeric(raw_data$TempNear)),
+  RH = forecast::na.interp(as.numeric(raw_data$RHNear))
+)
+
+data <- tsibble::tsibble(data, index = "time") # change to tsibble object
+```
+
+```{r}
+attach(data)
+# ozone
+feasts::gg_tsdisplay(data, Ozone, plot_type = "partial")
+
+# temperature
+feasts::gg_tsdisplay(data, Temp, plot_type = "partial")
+
+# cross-correlation plot
+ccf(Ozone, Temp, 48, main="Ozone vs Temperature", ylab="CCF")
+
+# pre-whitened
+fitTempAR2 <- stats::arima(Temp, order = c(2,0,0))
+Tempw <- residuals(fitTempAR2)
+ccf(Ozone, Tempw, 48, main = "Ozone vs Temperature Residuals", ylab="CCF(Ozone, Tempw)" )
+```
+
+- **QUESTION 2** Comment on the relationship you see in the series over time, and their joint structure. 
+
+Both series have strong auto correlations of order 2, as we can see from ACF and PACF plots of each of them. Meanwhile, they also share the cross correlations, as we can see from pre-whitening CCF plot. We also should notice the general exponentially decay phenomenon, which implies using VAR to model this problem. 
+
+- **QUESTION 3** Using the **VAR** command in the **vars** package, fit a vector autoregressive model of order 2. Assume a constant is present in the model, but not a trend. 
+```{r}
+# Only build model for Ozone and Temperature
+OT <- data.frame(
+    Ozone = data$Ozone,
+    Temperature = data$Temp
+)
+
+ar2fit <- vars::VAR(OT, p = 2, type = "const")
+```
+
+
+- **QUESTION 4** Perform appropriate model diagnostics. Comment on the fit of your model. Note is is NOT necessary to go on a model search, just simply comment on limitations if they exist of the current model.
+```{r}
+summary(ar2fit)
+```
+
+```{r}
+stats::acf(resid(ar2fit))
+```
+
+```{r}
+vars::serial.test(ar2fit, lags.pt = 24, type = "PT.adjusted")
+```
+
+1. From p-values and $R^2$:
+All the p-values of parameters are quite small. Meanwhile both two $R^2$ are larger than 0.9. This means VAR(2) is a good preliminary modeling for our data.
+
+2. From Portmanteau Test:
+It shows our model is reasonable in terms of capturing the correlation between different series and different time stamps.
+
+3. From residual plot:
+It implies the limitation of our models. We can see that there is a relatively strong auto correlation and cross correlation around lag 24 for both series, which suggests the daily seasonality haven't been captured. In order to further improve the accuracy, we should consider VSAR model in the future.
+
+
+- **QUESTION 5** Write down the model in final form. 
+$$
+Ozone_t = 0. 73 + 1.23Ozone_{t-1} - 0.32Ozone_{t-2} + 0.94Temp_{t-1} - 0.92Temp_{t-2}
+$$
+$$
+Temp_t = 0.73 + 0.01Ozone_{t-1} - 0.03Ozone_{t-2} + 1.71Temp_{t-1} - 0.71Temp_{t-2}
+$$
+
+- **QUESTION 6** Prediction. Using the fitted model predict the ambient ozone levels and temperature for the next 24 hours. Produce a fanplot of the predictions. 
+
+```{r}
+ar2pred <- predict(ar2fit, n.ahead = 24, ci = 0.95)
+ar2pred$endog <- tail(ar2pred$endog, 144) # only keep last 168 historical data for plot
+vars::fanchart(ar2pred)
+```
+
+- **QUESTION 7** Summarize your findings assuming model is PERFECT. Describe the modeled relationship identified between the two series. Comment on what the model tells you and the forecasts obtained.
+
+Assume our VAR(2) model is perfect, then there is a feedback relationship of order 2 between temperature and ozone. Translating to plain language, Ozone level in the next time stamp is dependent on the past two time stamps' Ozone level and temperature. And Temperature has the same structure as well. 
+
+Meanwhile, since this is an VAR process, the forecasting will converge to the mean of series exponentially. Since there are two constant terms in the model, the means of series aren't zeros. 

@@ -1,0 +1,195 @@
+---
+title: "Modeling Project 1- Ozone"
+author: 'Authors: Ziren Wang'
+date: "Due March 11, 5pm"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+# knitr::opts_chunk$set(
+#   echo = FALSE,
+# 	message = FALSE,
+# 	warning = FALSE,
+# 	cache = FALSE,
+# 	include = TRUE,
+# 	results = FALSE
+# )
+knitr::opts_chunk$set(
+    echo = FALSE,
+    message = FALSE,
+    warning = FALSE,
+    cache = FALSE,
+    results = FALSE
+)
+library(fpp3)
+```
+
+# Read data
+
+```{r, READDATA, echo=T}
+# Set path to point where your o3.RDS file sits
+o3 <- readRDS(file = "/Users/canerdogan/Desktop/o3.rds")
+```
+
+# Data structure
+
+Data is a `tsibble` structure. Change to other data structures as needed.
+```{r, ExamineData, echo=T}
+str(o3)
+head(o3)
+```
+
+# Background
+
+Understanding air pollution in Houston is a primary concern for the Houston Health Department. Adverse air quality conditions can have a direct health impact on sensitive populations. The focus of this study is understanding the changing dynamics of ambient ozone levels and to create a model from which near term future levels can be predicted. 
+
+**Ozone**, is 3 oxygen molecules or $O_3$ and is a secondary pollutant formed from primary air pollutants of $NO$, $NO_2$ and VOCs (volatile organic compounds). The chemical reaction is sunlight induced, and therefore meteorology plays an important role in ozone production. 
+
+The data available to study this problem, consists of hourly observations for the year of 2011 at a fixed-site monitor close to downtown Houston. The variables included in the data set are:
+
+- ambient ozone level in parts per billion
+- temperature
+- relative humidity
+- Combined DateTime variable (date hour)
+
+For purposes of this exercise you will use the ozone and DateTime variable.
+
+This data set is `o3.rds` in our DATA folder. 
+
+```{r}
+head(o3)
+```
+
+# Plotting and understanding the data
+Develop descriptive plots that illustrate:
+
+- How ozone changes over a 24 hour period
+- How ozone changes by day of week
+- How ozone changes by month of year
+
+```{r}
+# hour
+boxplot(ozone~lubridate::hour(DateTime), data = o3)
+
+# day
+boxplot(ozone~lubridate::day(DateTime), data = o3)
+
+# month
+boxplot(ozone~lubridate::month(DateTime), data = o3)
+```
+
+
+# Transformation
+
+Investigate if a power transformation is needed for this series. If so, conduct that transformation and model the transformed series. 
+
+```{r}
+o3 %>%
+  autoplot(ozone) +
+  labs(y = "",
+       title = "Original ozone data")
+
+lambda <- o3 %>% features(ozone, features = guerrero) %>% pull(lambda_guerrero)
+
+
+o3 %>%
+  autoplot(box_cox(ozone, lambda)) +
+  labs(y = "",
+       title = latex2exp::TeX(paste0(
+         "Transformed ozone with $\\lambda$ = ",
+         round(lambda,2))))
+```
+
+Compared to the original data, the relative variability of the transformed data increases at the part of Jan 2011 - Jun 2011 in order to match the high variability between Jun 2011 to December 2011. Meanwhile using guerrero criteria the selected lambda is 0.26, which is hard to explain. Therefore, we don't think the power transformation is needed for this ozone series.
+
+All in all, we have first looked at the non transformed data for the original
+ozone data. Later on, we have decided to try and apply the guerrero method 
+in order to determine the optimal lambda value automatically, which was
+determined to be near 0.26. However, looking at the transformed graph
+observationally, we decided that there was not a significant improvement in
+getting variance under control and a transformation was not a necessity.
+
+# Model 1: NON-SEASONAL ARIMA MODEL
+
+Develop the best non-seasonal ARIMA model for the ozone time series. Use the tools we discussed in this course to identify the best model and confirm that the standardized residuals exhibit properties you would expect from a good model.
+
+```{r}
+o3 %>%
+  model(feasts::classical_decomposition(ozone, type="additive")) %>%
+  components() %>%
+  autoplot() +
+  labs(title = "Classical additive decompostion of ambient ozone")
+```
+
+From decomposition plot, we can see the trend is relative stable for ozone series. Therefore, we don't need to use differencing to stabilize the mean. 
+
+```{r}
+astsa::acf2(o3$ozone, max.lag=24*3)
+```
+
+From ACF and PACF plot, there is a very clear AR(2) component. Combined with the above discussion that there is no differencing, the first model we tried is ARIMA(2,0,0).
+
+
+```{r}
+ARIMA1 <- astsa::sarima(o3$ozone, p=2, d=0, q=0)
+astsa::acf2(resid(ARIMA1$fit))
+```
+
+As we can see from residue plot, the standardized residuals fluctuate around 0 so our model works in some sense. However, when we look at the ACF and PACF of the residue we found a cyclic pattern every 24 time stamps. This motivates us to build a seasonal model in the following section. As we only consider ARIMA model in this section, we decide to increase the order of AR. Meanwhile there is some moving average component going on as well. After combining all this information together and trying several orders, we ended up with ARIMA(24,0,2) in the end.
+
+```{r}
+ARIMA2 <- astsa::sarima(o3$ozone, p=24, d=0, q=2)
+astsa::acf2(resid(ARIMA2$fit))
+```
+
+# Model 2: SEASONAL ARIMA MODEL
+
+Develop the best seasonal ARIMA model for the ozone time series. Use the tools we discussed in this course to identify the best model and confirm that the standardized residuals exhibit properties you would expect from a good model.
+
+From discussion above, we add seasonality of order 24 and manually tried several order for SAR and SMA. The final model is SARIMA(2,0,2)(1,1,1)[24]
+```{r}
+SARIMA1 <- astsa::sarima(o3$ozone, p=2, d=0, q=2, P=1, D=1, Q=1, S=24)
+astsa::acf2(resid(SARIMA1$fit))
+```
+
+Also we used package to get a "best" SARIMA model based on forecast::auto.arima.
+```{r}
+SARIMA2 <- forecast::auto.arima(o3$ozone,seasonal=TRUE,max.order = 30)
+astsa::acf2(o3$ozone - SARIMA2$fitted)
+forecast::arimaorder(SARIMA2)
+```
+
+# Model Comparison
+
+Quantitatively compare Models 1 and 2. Which model do you recommend and why? 
+```{r}
+compare <- matrix(data = round(c(ARIMA2$AIC, ARIMA2$AICc, ARIMA2$BIC,
+                               SARIMA1$AIC, SARIMA1$AICc, SARIMA1$BIC,
+                               SARIMA2$aic, SARIMA2$aicc, SARIMA2$bic), 3),
+                 byrow = TRUE,
+                 nrow = 3)
+rownames(compare) <- c("ARIMA(2,0,3)", "SARIMA(2,0,2)(1,1,1)[24]", "AutoSARIMA")
+colnames(compare) <- c("AIC", "AICc", "BIC")
+compare
+```
+
+From the above comparison, SARIMA(2,0,2)(1,1,1)[24] is the best among the three models since it has the lowest AIC, AICc, and BIC.
+
+# Forecasts
+
+For your chosen model, forecast hourly ozone measurements 1 week into the future. Plot your forecasts including a 95% forecast interval. If you conducted a power transformation, provide a plot of your forecast and forecast interval in the original units. 
+
+```{r}
+fc <- astsa::sarima.for(o3$ozone, n.ahead = 24*7,
+                  p=2, d=0, q=2, P=1, D=1, Q=1, S=24, fixed = coef(SARIMA1$fit))
+```
+
+# Comment
+
+Comment on the features your model explains. Comment on your ability to forecast ozone, one-day ahead up to one-week ahead. 
+
+The SARIMA(2,0,2)(1,1,1)[24] model captures autoregressive and seasonal information of the ozone series. It figures out that the ozone demonstrates a daily seasonality and day-to-day trend changing(including one order for the seasonal differencing). On the other hand, since we only use the order of 24 the model doesn't capture the weekly or monthly effects. Meanwhile, there seems are some left out information between lag = 22 to lag = 25, as we can see from the above residue plot. In the future we may consider to include other series to build a better model.
+
+For the forecasting, it demonstrates the diurnal as well as daily seasonal pattern. As the forecasting time becomes longer, the confidence interval increases and finally reach a certain stable level. Forecasting tends to converge to the sample mean, and fluctuate following its previous seasonal pattern.
+
